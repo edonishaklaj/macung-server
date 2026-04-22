@@ -273,8 +273,9 @@ io.on("connection",(socket)=>{
       r.pending=[];
     }
     const active=new Set(r.players.map(p=>p.seat));
-    r.dealer=(r.dealer+1)%4;
-    while(!active.has(r.dealer)) r.dealer=(r.dealer+1)%4;
+    // Clockwise rotation: 0→3→2→1→0
+    r.dealer=(r.dealer+3)%4;
+    while(!active.has(r.dealer)) r.dealer=(r.dealer+3)%4;
     r.roundNum++;
     io.to(code).emit("roomUpdate",roomInfo(code));
     dealRound(code);
