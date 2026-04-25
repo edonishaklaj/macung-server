@@ -125,7 +125,10 @@ function dealRound(code){
   });
 
   const dealer=r.players.find(p=>p.seat===ds);
-  const dc=dealer.hand.pop();
+  // Dealer must discard a non-Joker card first
+  let dcIdx = dealer.hand.length - 1;
+  while(dcIdx > 0 && dealer.hand[dcIdx].isJoker) dcIdx--;
+  const dc = dealer.hand.splice(dcIdx, 1)[0];
   r.discard.push(dc);
   r.playerDiscards[ds].push(dc);
 
