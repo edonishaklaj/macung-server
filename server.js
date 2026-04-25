@@ -228,12 +228,20 @@ io.on("connection",(socket)=>{
     broadcast(code);
   });
 
-  socket.on("discardCard",({code,cardIdx})=>{
+  socket.on("discardCard",({code,cardIdx,cardId})=>{
     const r=rooms[code];
     if(!r||!r.started) return;
     const p=r.players.find(p=>p.id===socket.id);
     if(!p||r.current!==p.seat||r.phase!=="discard") return;
-    const card=p.hand.splice(cardIdx,1)[0];
+    // Find by cardId first (more reliable), fallback to cardIdx
+    let card;
+    if(cardId){
+      const idx=p.hand.findIndex(c=>c.id===cardId);
+      if(idx===-1) return;
+      card=p.hand.splice(idx,1)[0];
+    } else {
+      card=p.hand.splice(cardIdx,1)[0];
+    }
     if(!card) return;
     r.discard.push(card);
     r.playerDiscards[p.seat].push(card);
