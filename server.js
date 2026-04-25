@@ -254,7 +254,7 @@ io.on("connection",(socket)=>{
     broadcast(code);
   });
 
-  socket.on("finishGame",({code,type})=>{
+  socket.on("finishGame",({code,type,localHand})=>{
     const r=rooms[code];
     if(!r||!r.started) return;
     const p=r.players.find(p=>p.id===socket.id);
@@ -269,7 +269,7 @@ io.on("connection",(socket)=>{
     io.to(code).emit("gameFinished",{
       type,winner:p.seat,val,
       winnerName:p.name,
-      winnerHand:p.hand,
+      winnerHand: localHand && localHand.length>0 ? localHand : p.hand,
       scores:r.scores,
       playerCount:n,
     });
