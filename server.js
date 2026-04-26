@@ -2,12 +2,52 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const nodemailer = require("nodemailer");
 
 const app = express();
 app.use(cors());
+app.use(express.json());
 const server = http.createServer(app);
 const io = new Server(server, {
   cors: { origin: "*", methods: ["GET","POST"] }
+});
+
+// ── EMAIL SETUP ──────────────────────────────────────────────────────────────
+const transporter = nodemailer.createTransport({
+  service: "gmail",
+  auth: {
+    user: process.env.EMAIL_USER,
+    pass: process.env.EMAIL_PASS,
+  }
+});
+
+app.post("/send-welcome", async(req,res)=>{
+  const {name, email} = req.body;
+  if(!email||!name){ res.json({ok:false}); return; }
+  try{
+    await transporter.sendMail({
+      from: `"Maçung 🃏" <${process.env.EMAIL_USER}>`,
+      to: email,
+      subject: "Mirë se vjen në Maçung! 🃏",
+      html: `
+        <div style="font-family:Georgia,serif;max-width:480px;margin:0 auto;background:#0a0000;color:#e8d5d5;padding:30px;border-radius:12px;">
+          <h1 style="color:#ff4444;text-align:center;letter-spacing:3px;">♠ MAÇUNG ♠</h1>
+          <p style="font-size:18px;color:#ffd700;">Mirë se vjen, ${name}! 🎉</p>
+          <p style="color:#c08080;">Accounts yt u krijua me sukses. Tani mund të luash Maçung online me miqtë!</p>
+          <div style="background:rgba(255,68,68,0.1);border:1px solid #ff444444;border-radius:8px;padding:16px;margin:20px 0;">
+            <p style="margin:0;color:#888;font-size:13px;">Email i regjistrimit:</p>
+            <p style="margin:4px 0 0;color:#ff4444;font-weight:700;">${email}</p>
+          </div>
+          <p style="color:#666;font-size:12px;text-align:center;">Loja fillon duke hapur <a href="https://macung.vercel.app" style="color:#ff4444;">macung.vercel.app</a></p>
+          <p style="color:#333;font-size:11px;text-align:center;">© Maçung — Loja shqiptare e letrave</p>
+        </div>
+      `,
+    });
+    res.json({ok:true});
+  }catch(e){
+    console.error("Email error:",e.message);
+    res.json({ok:false});
+  }
 });
 
 const rooms = {};
