@@ -278,6 +278,11 @@ io.on("connection",(socket)=>{
   socket.on("newRound",({code})=>{
     const r=rooms[code];
     if(!r) return;
+    // Deduplicate: ignore if round already started recently
+    if(r.roundStarting) return;
+    r.roundStarting=true;
+    setTimeout(()=>{ if(r) r.roundStarting=false; },3000);
+
     // Merge pending into active
     if(r.pending.length>0){
       r.pending.forEach(p=>r.players.push(p));
