@@ -114,8 +114,7 @@ function dealRound(code){
   r.deck=createDeck();
   r.discard=[];
   r.playerDiscards={0:[],1:[],2:[],3:[]};
-  r.phase="draw";
-  r.hasDrawn=false;
+  r.hasDrawn=true;
   r.players.forEach(p=>{p.hand=[];});
 
   const ds=r.dealer;
@@ -124,16 +123,9 @@ function dealRound(code){
     for(let i=0;i<n;i++) p.hand.push(r.deck.shift());
   });
 
-  const dealer=r.players.find(p=>p.seat===ds);
-  // Dealer must discard a non-Joker card first
-  let dcIdx = dealer.hand.length - 1;
-  while(dcIdx > 0 && dealer.hand[dcIdx].isJoker) dcIdx--;
-  const dc = dealer.hand.splice(dcIdx, 1)[0];
-  r.discard.push(dc);
-  r.playerDiscards[ds].push(dc);
-
-  const active=new Set(r.players.map(p=>p.seat));
-  r.current=nextSeat(ds,active);
+  // Dealer starts with 15 cards and must discard first
+  r.phase="discard";
+  r.current=ds;
 
   broadcast(code);
 }
