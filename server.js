@@ -279,6 +279,11 @@ io.on("connection",(socket)=>{
       card=p.hand.splice(cardIdx,1)[0];
     }
     if(!card) return;
+    // STRICT: never allow Joker discard
+    if(card.isJoker){
+      p.hand.push(card); // put it back
+      return;
+    }
     r.discard.push(card);
     r.playerDiscards[p.seat].push(card);
     const active=new Set(r.players.map(x=>x.seat));
