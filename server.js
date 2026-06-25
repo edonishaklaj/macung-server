@@ -51,6 +51,31 @@ app.post("/send-welcome", async(req,res)=>{
   }
 });
 
+// ── ONESIGNAL PUSH (optional) ────────────────────────────────────────────────
+// Env vars në Render: ONESIGNAL_APP_ID + ONESIGNAL_REST_API_KEY
+async function sendPush(emails, title, message){
+  if(!process.env.ONESIGNAL_APP_ID||!process.env.ONESIGNAL_REST_API_KEY) return;
+  const targets=(emails||[]).filter(Boolean).map(e=>e.toLowerCase());
+  if(targets.length===0) return;
+  try{
+    await fetch("https://api.onesignal.com/notifications",{
+      method:"POST",
+      headers:{
+        "Content-Type":"application/json",
+        "Authorization":`Basic ${process.env.ONESIGNAL_REST_API_KEY}`
+      },
+      body:JSON.stringify({
+        app_id:process.env.ONESIGNAL_APP_ID,
+        include_aliases:{external_id:targets},
+        target_channel:"push",
+        headings:{en:title},
+        contents:{en:message},
+        url:"https://macung.vercel.app"
+      })
+    });
+  }catch(e){ console.log("Push error:",e.message); }
+}
+
 const rooms = {};
 
 function makeCode(){
@@ -95,11 +120,11 @@ function nextSeat(cur, activeSet){
 }
 
 const TABLES=[
-  {id:1,surrender:0.5,kent:1,macung:2},
-  {id:2,surrender:1,kent:2,macung:5},
-  {id:3,surrender:2,kent:5,macung:10},
-  {id:4,surrender:5,kent:10,macung:20},
-  {id:5,surrender:10,kent:20,macung:50},
+  {id:1,surrender:50,kent:100,macung:200},
+  {id:2,surrender:100,kent:200,macung:500},
+  {id:3,surrender:200,kent:500,macung:1000},
+  {id:4,surrender:500,kent:1000,macung:2000},
+  {id:5,surrender:1000,kent:2000,macung:5000},
 ];
 
 function newRoom(tableId){
@@ -174,17 +199,17 @@ function dealRound(code){
 io.on("connection",(socket)=>{
   console.log("Connected:",socket.id);
 
-  socket.on("createRoom",({playerName,tableId},cb)=>{
+  socket.on("createRoom",({playerName,tableId,email},cb)=>{
     const code=makeCode();
     rooms[code]=newRoom(tableId);
     rooms[code].code=code;
-    rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[]});
+    rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null});
     socket.join(code);
     cb({code,seat:0,pending:false});
     io.to(code).emit("roomUpdate",roomInfo(code));
   });
 
-  socket.on("joinRoom",({playerName,code},cb)=>{
+  socket.on("joinRoom",({playerName,code,email},cb)=>{
     const r=rooms[code];
     if(!r){cb({error:"Dhoma nuk ekziston"});return;}
     const total=r.players.length+r.pending.length;
@@ -193,27 +218,34 @@ io.on("connection",(socket)=>{
     const taken=[...r.players,...r.pending].map(p=>p.seat);
     const seat=[0,1,2,3].find(s=>!taken.includes(s));
 
+    // Notify existing players (push shows only if they're away from the tab)
+    const existingEmails=r.players.map(p=>p.email).filter(Boolean);
+    sendPush(existingEmails,"Maçung 🃏",`${playerName} hyri në dhomën ${code}!`);
+
     if(r.started){
-      r.pending.push({id:socket.id,name:playerName,seat,hand:[]});
+      r.pending.push({id:socket.id,name:playerName,seat,hand:[],email:email||null});
       socket.join(code);
       cb({code,seat,pending:true});
       socket.emit("waitingForRound",{message:"⏳ Duke pritur fundin e raundeve..."});
     } else {
-      r.players.push({id:socket.id,name:playerName,seat,hand:[]});
+      r.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null});
       socket.join(code);
       cb({code,seat,pending:false});
     }
     io.to(code).emit("roomUpdate",roomInfo(code));
   });
 
-  socket.on("findRoom",({playerName,tableId},cb)=>{
+  socket.on("findRoom",({playerName,tableId,email},cb)=>{
     const open=Object.values(rooms).find(r=>
       !r.started&&r.tableId===tableId&&(r.players.length+r.pending.length)<4
     );
     if(open){
       const taken=open.players.map(p=>p.seat);
       const seat=[0,1,2,3].find(s=>!taken.includes(s));
-      open.players.push({id:socket.id,name:playerName,seat,hand:[]});
+      // Notify existing players
+      const existingEmails=open.players.map(p=>p.email).filter(Boolean);
+      sendPush(existingEmails,"Maçung 🃏",`${playerName} hyri në dhomën ${open.code}!`);
+      open.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null});
       socket.join(open.code);
       cb({code:open.code,seat,pending:false});
       io.to(open.code).emit("roomUpdate",roomInfo(open.code));
@@ -221,7 +253,7 @@ io.on("connection",(socket)=>{
       const code=makeCode();
       rooms[code]=newRoom(tableId);
       rooms[code].code=code;
-      rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[]});
+      rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null});
       socket.join(code);
       cb({code,seat:0,pending:false});
       io.to(code).emit("roomUpdate",roomInfo(code));
