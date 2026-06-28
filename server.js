@@ -348,9 +348,39 @@ io.on("connection",(socket)=>{
   socket.on("newRound",({code})=>{
     const r=rooms[code];
     if(!r) return;
-    // Deduplicate: ignore if round already started recently
+    // If a round is already being dealt, ignore
+    if(r.roundStarting) return;
+
+    // Initialize vote tracking for this round-end
+    if(!r.readyVotes) r.readyVotes=new Set();
+    const p=r.players.find(x=>x.id===socket.id);
+    if(p) r.readyVotes.add(p.seat);
+
+    // Tell everyone how many are ready (for UI: "2/3 gati")
+    io.to(code).emit("readyUpdate",{
+      ready:r.readyVotes.size,
+      total:r.players.length,
+    });
+
+    // Start a 30s fallback timer the first time someone votes
+    if(!r.readyTimer){
+      r.readyTimer=setTimeout(()=>{ startNextRound(code); }, 30000);
+    }
+
+    // If everyone has voted, start immediately
+    if(r.readyVotes.size>=r.players.length){
+      startNextRound(code);
+    }
+  });
+
+  function startNextRound(code){
+    const r=rooms[code];
+    if(!r) return;
     if(r.roundStarting) return;
     r.roundStarting=true;
+    // Clear vote state + timer
+    if(r.readyTimer){ clearTimeout(r.readyTimer); r.readyTimer=null; }
+    r.readyVotes=new Set();
     setTimeout(()=>{ if(r) r.roundStarting=false; },3000);
 
     // Merge pending into active
@@ -365,7 +395,7 @@ io.on("connection",(socket)=>{
     r.roundNum++;
     io.to(code).emit("roomUpdate",roomInfo(code));
     dealRound(code);
-  });
+  }
 
   socket.on("disconnect",()=>{
     const r=getRoomBySocket(socket.id);
@@ -373,12 +403,23 @@ io.on("connection",(socket)=>{
     r.players=r.players.filter(p=>p.id!==socket.id);
     r.pending=r.pending.filter(p=>p.id!==socket.id);
     if(r.players.length===0&&r.pending.length===0){
+      if(r.readyTimer){ clearTimeout(r.readyTimer); r.readyTimer=null; }
       delete rooms[r.code];
     } else {
       io.to(r.code).emit("playerLeft",{name:"Lojtari"});
       io.to(r.code).emit("roomUpdate",roomInfo(r.code));
       if(r.started&&r.players.length<2)
         io.to(r.code).emit("gamePaused",{message:"⚠️ Lojtarë të pamjaftueshëm"});
+      // If a vote was in progress and remaining players have all voted, start now
+      if(r.readyVotes&&r.readyVotes.size>0){
+        const activeSeats=new Set(r.players.map(p=>p.seat));
+        // Keep only votes from players still present
+        r.readyVotes=new Set([...r.readyVotes].filter(s=>activeSeats.has(s)));
+        io.to(r.code).emit("readyUpdate",{ready:r.readyVotes.size,total:r.players.length});
+        if(r.players.length>0 && r.readyVotes.size>=r.players.length){
+          startNextRound(r.code);
+        }
+      }
     }
     console.log("Disconnected:",socket.id);
   });
