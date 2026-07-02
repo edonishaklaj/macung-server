@@ -336,6 +336,8 @@ io.on("connection",(socket)=>{
       if(x.seat===p.seat) r.scores[x.seat]-=(val*(n-1));
       else r.scores[x.seat]+=val;
     });
+    // Round is over → votes for next round are now allowed
+    r.roundEnded=true;
     io.to(code).emit("gameFinished",{
       type,winner:p.seat,val,
       winnerName:p.name,
@@ -348,6 +350,8 @@ io.on("connection",(socket)=>{
   socket.on("newRound",({code})=>{
     const r=rooms[code];
     if(!r) return;
+    // Only accept votes after the round actually ended (gameFinished)
+    if(!r.roundEnded) return;
     // If a round is already being dealt, ignore
     if(r.roundStarting) return;
 
@@ -378,6 +382,7 @@ io.on("connection",(socket)=>{
     if(!r) return;
     if(r.roundStarting) return;
     r.roundStarting=true;
+    r.roundEnded=false; // votes closed until next gameFinished
     // Clear vote state + timer
     if(r.readyTimer){ clearTimeout(r.readyTimer); r.readyTimer=null; }
     r.readyVotes=new Set();
