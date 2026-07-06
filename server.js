@@ -405,23 +405,34 @@ io.on("connection",(socket)=>{
   socket.on("disconnect",()=>{
     const r=getRoomBySocket(socket.id);
     if(!r) return;
+    // Capture who left BEFORE removing them
+    const leaver=r.players.find(p=>p.id===socket.id);
+    const leaverName=leaver?leaver.name:"Lojtari";
+    const leaverSeat=leaver?leaver.seat:null;
     r.players=r.players.filter(p=>p.id!==socket.id);
     r.pending=r.pending.filter(p=>p.id!==socket.id);
     if(r.players.length===0&&r.pending.length===0){
       if(r.readyTimer){ clearTimeout(r.readyTimer); r.readyTimer=null; }
       delete rooms[r.code];
     } else {
-      io.to(r.code).emit("playerLeft",{name:"Lojtari"});
+      io.to(r.code).emit("playerLeft",{name:leaverName});
       io.to(r.code).emit("roomUpdate",roomInfo(r.code));
-      if(r.started&&r.players.length<2)
-        io.to(r.code).emit("gamePaused",{message:"⚠️ Lojtarë të pamjaftueshëm"});
+      if(r.started&&r.players.length<2){
+        // Only 1 player remains → game can't continue
+        io.to(r.code).emit("gameEnded",{message:`❌ ${leaverName} doli — loja mbaroi`});
+      } else if(r.started&&leaverSeat!==null&&r.current===leaverSeat){
+        // It was the leaver's turn → pass turn to next active player so game doesn't hang
+        const active=new Set(r.players.map(p=>p.seat));
+        r.current=nextSeat(r.current,active);
+        r.phase="draw"; r.hasDrawn=false;
+        broadcast(r.code);
+      }
       // If a vote was in progress and remaining players have all voted, start now
       if(r.readyVotes&&r.readyVotes.size>0){
         const activeSeats=new Set(r.players.map(p=>p.seat));
-        // Keep only votes from players still present
         r.readyVotes=new Set([...r.readyVotes].filter(s=>activeSeats.has(s)));
         io.to(r.code).emit("readyUpdate",{ready:r.readyVotes.size,total:r.players.length});
-        if(r.players.length>0 && r.readyVotes.size>=r.players.length){
+        if(r.players.length>1 && r.readyVotes.size>=r.players.length){
           startNextRound(r.code);
         }
       }
