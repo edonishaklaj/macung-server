@@ -70,7 +70,7 @@ async function sendPush(emails, title, message){
         target_channel:"push",
         headings:{en:title},
         contents:{en:message},
-        url:"https://macung.vercel.app"
+        url:"https://macung.com"
       })
     });
   }catch(e){ console.log("Push error:",e.message); }
