@@ -146,6 +146,21 @@ function newRoom(tableId){
   };
 }
 
+// Next dealer: the seat that plays right after the current dealer (same
+// direction as the turns, 0→3→2→1), among next round's players (current +
+// pending), skipping empty seats. Doesn't depend on who won the round.
+function nextDealerSeat(r){
+  const seats=new Set([...r.players,...r.pending].map(p=>p.seat));
+  let d=(r.dealer+3)%4;
+  for(let i=0;i<4&&!seats.has(d);i++) d=(d+3)%4;
+  return d;
+}
+function nextDealerInfo(r){
+  const seat=nextDealerSeat(r);
+  const p=[...r.players,...r.pending].find(x=>x.seat===seat);
+  return {nextDealer:seat,nextDealerName:p?p.name:""};
+}
+
 // Seats still playing the current round
 function activeSeats(r){
   return new Set(r.players.map(p=>p.seat).filter(s=>!r.surrendered.has(s)));
@@ -246,6 +261,7 @@ function endRoundBySurrender(code, winnerSeat){
     playerCount:r.players.length,
     payments,
     surrendered:[...r.surrendered],
+    ...nextDealerInfo(r),
   });
 }
 
@@ -422,6 +438,7 @@ io.on("connection",(socket)=>{
       playerCount:n,
       payments,
       surrendered:[...r.surrendered],
+      ...nextDealerInfo(r),
     });
   });
 
@@ -471,10 +488,8 @@ io.on("connection",(socket)=>{
       r.pending.forEach(p=>r.players.push(p));
       r.pending=[];
     }
-    const active=new Set(r.players.map(p=>p.seat));
-    // Clockwise rotation: 0→3→2→1→0
-    r.dealer=(r.dealer+3)%4;
-    while(!active.has(r.dealer)) r.dealer=(r.dealer+3)%4;
+    // Exactly one rotation per round (startNextRound runs once per round end)
+    r.dealer=nextDealerSeat(r);
     r.roundNum++;
     io.to(code).emit("roomUpdate",roomInfo(code));
     dealRound(code);
