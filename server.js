@@ -139,7 +139,16 @@ function newRoom(tableId){
     roundNum:1,
     scores:{0:0,1:0,2:0,3:0},
     started:false,
+    surrendered:new Set(),  // seats out of the current round (dorëzim)
+    drawnSeats:new Set(),   // seats that already drew this round (no surrender after that)
+    surrenderFees:{},
+    surrenderPot:0,         // fees paid this round, go to the round winner
   };
+}
+
+// Seats still playing the current round
+function activeSeats(r){
+  return new Set(r.players.map(p=>p.seat).filter(s=>!r.surrendered.has(s)));
 }
 
 function roomInfo(code){
@@ -169,6 +178,8 @@ function broadcast(code){
     deckCount:r.deck.length,
     players:r.players.map(p=>({seat:p.seat,name:p.name,cardCount:p.hand.length})),
     playerCount:r.players.length,
+    surrendered:[...r.surrendered],
+    drawnSeats:[...r.drawnSeats],
   };
   io.to(code).emit("gameUpdate",state);
   r.players.forEach(p=>io.to(p.id).emit("yourHand",{hand:p.hand}));
@@ -181,6 +192,11 @@ function dealRound(code){
   r.discard=[];
   r.playerDiscards={0:[],1:[],2:[],3:[]};
   r.hasDrawn=true;
+  r.roundEnded=false;
+  r.surrendered=new Set();
+  r.drawnSeats=new Set();
+  r.surrenderFees={};
+  r.surrenderPot=0;
   r.players.forEach(p=>{p.hand=[];});
 
   const ds=r.dealer;
@@ -194,6 +210,43 @@ function dealRound(code){
   r.current=ds;
 
   broadcast(code);
+}
+
+// Pays the round: every active loser pays val, surrendered players already paid
+// their fee (surrenderPot). The winner collects both. Returns {seat: +/-chips}.
+function settleRound(r, winnerSeat, val){
+  const payments={};
+  let gain=r.surrenderPot;
+  r.players.forEach(x=>{
+    if(x.seat===winnerSeat) return;
+    if(r.surrendered.has(x.seat)){ payments[x.seat]=-(r.surrenderFees[x.seat]||0); return; }
+    r.scores[x.seat]+=val;
+    payments[x.seat]=-val;
+    gain+=val;
+  });
+  r.scores[winnerSeat]-=gain;
+  payments[winnerSeat]=gain;
+  r.roundEnded=true;
+  r.phase="ended";
+  return payments;
+}
+
+// Everyone else surrendered → the last player wins the round and takes the fees
+function endRoundBySurrender(code, winnerSeat){
+  const r=rooms[code];
+  const w=r.players.find(x=>x.seat===winnerSeat);
+  const payments=settleRound(r, winnerSeat, 0);
+  r.current=winnerSeat;
+  broadcast(code);
+  io.to(code).emit("gameFinished",{
+    type:"surrender",winner:winnerSeat,val:0,
+    winnerName:w?w.name:"",
+    winnerHand:[],
+    scores:r.scores,
+    playerCount:r.players.length,
+    payments,
+    surrendered:[...r.surrendered],
+  });
 }
 
 io.on("connection",(socket)=>{
@@ -271,9 +324,10 @@ io.on("connection",(socket)=>{
 
   socket.on("drawDeck",({code})=>{
     const r=rooms[code];
-    if(!r||!r.started) return;
+    if(!r||!r.started||r.roundEnded) return;
     const p=r.players.find(p=>p.id===socket.id);
-    if(!p||r.current!==p.seat||r.phase!=="draw"||r.hasDrawn) return;
+    if(!p||r.surrendered.has(p.seat)) return;
+    if(r.current!==p.seat||r.phase!=="draw"||r.hasDrawn) return;
     if(r.deck.length===0){
       if(r.discard.length<=1) return;
       const top=r.discard.pop();r.deck=shuffle(r.discard);r.discard=[top];
@@ -281,26 +335,30 @@ io.on("connection",(socket)=>{
     const card=r.deck.shift();
     p.hand.push(card);
     r.hasDrawn=true;r.phase="discard";
+    r.drawnSeats.add(p.seat);
     broadcast(code);
   });
 
   socket.on("drawDiscard",({code})=>{
     const r=rooms[code];
-    if(!r||!r.started) return;
+    if(!r||!r.started||r.roundEnded) return;
     const p=r.players.find(p=>p.id===socket.id);
-    if(!p||r.current!==p.seat||r.phase!=="draw"||r.hasDrawn||r.discard.length===0) return;
+    if(!p||r.surrendered.has(p.seat)) return;
+    if(r.current!==p.seat||r.phase!=="draw"||r.hasDrawn||r.discard.length===0) return;
     const card=r.discard.pop();
     p.hand.push(card);
     r.playerDiscards[p.seat]=r.playerDiscards[p.seat].filter(c=>c.id!==card.id);
     r.hasDrawn=true;r.phase="discard";
+    r.drawnSeats.add(p.seat);
     broadcast(code);
   });
 
   socket.on("discardCard",({code,cardIdx,cardId})=>{
     const r=rooms[code];
-    if(!r||!r.started) return;
+    if(!r||!r.started||r.roundEnded) return;
     const p=r.players.find(p=>p.id===socket.id);
-    if(!p||r.current!==p.seat||r.phase!=="discard") return;
+    if(!p||r.surrendered.has(p.seat)) return;
+    if(r.current!==p.seat||r.phase!=="discard") return;
     // Find by cardId first (more reliable), fallback to cardIdx
     let card;
     if(cardId){
@@ -318,32 +376,52 @@ io.on("connection",(socket)=>{
     }
     r.discard.push(card);
     r.playerDiscards[p.seat].push(card);
-    const active=new Set(r.players.map(x=>x.seat));
-    r.current=nextSeat(r.current,active);
+    r.current=nextSeat(r.current,activeSeats(r));
+    r.phase="draw";r.hasDrawn=false;
+    broadcast(code);
+  });
+
+  // Dorëzim: only on the player's own turn, before their first draw of the round
+  // (the dealer's first draw comes after his opening discard). The player pays
+  // the table's surrender fee and sits out until the next round.
+  socket.on("surrender",({code})=>{
+    const r=rooms[code];
+    if(!r||!r.started||r.roundEnded) return;
+    const p=r.players.find(p=>p.id===socket.id);
+    if(!p||r.current!==p.seat||r.phase!=="draw"||r.hasDrawn) return;
+    if(r.drawnSeats.has(p.seat)||r.surrendered.has(p.seat)) return;
+    const table=TABLES.find(t=>t.id===r.tableId)||TABLES[0];
+    r.surrendered.add(p.seat);
+    r.surrenderFees[p.seat]=table.surrender;
+    r.surrenderPot+=table.surrender;
+    r.scores[p.seat]+=table.surrender;
+    io.to(code).emit("playerSurrendered",{seat:p.seat,name:p.name,fee:table.surrender});
+    const active=activeSeats(r);
+    if(active.size===1){ endRoundBySurrender(code,[...active][0]); return; }
+    r.current=nextSeat(p.seat,active);
     r.phase="draw";r.hasDrawn=false;
     broadcast(code);
   });
 
   socket.on("finishGame",({code,type,localHand})=>{
     const r=rooms[code];
-    if(!r||!r.started) return;
+    if(!r||!r.started||r.roundEnded) return; // a round is paid only once
     const p=r.players.find(p=>p.id===socket.id);
-    if(!p) return;
+    if(!p||r.surrendered.has(p.seat)) return;
     const table=TABLES.find(t=>t.id===r.tableId)||TABLES[0];
-    const val=type==="macung"?table.macung:table.kent;
+    const kind=type==="macung"?"macung":"kent";
+    const val=table[kind];
     const n=r.players.length;
-    r.players.forEach(x=>{
-      if(x.seat===p.seat) r.scores[x.seat]-=(val*(n-1));
-      else r.scores[x.seat]+=val;
-    });
-    // Round is over → votes for next round are now allowed
-    r.roundEnded=true;
+    // Round is over → votes for next round are now allowed (settleRound sets roundEnded)
+    const payments=settleRound(r, p.seat, val);
     io.to(code).emit("gameFinished",{
-      type,winner:p.seat,val,
+      type:kind,winner:p.seat,val,
       winnerName:p.name,
       winnerHand: localHand && localHand.length>0 ? localHand : p.hand,
       scores:r.scores,
       playerCount:n,
+      payments,
+      surrendered:[...r.surrendered],
     });
   });
 
@@ -420,10 +498,12 @@ io.on("connection",(socket)=>{
       if(r.started&&r.players.length<2){
         // Only 1 player remains → game can't continue
         io.to(r.code).emit("gameEnded",{message:`❌ ${leaverName} doli — loja mbaroi`});
-      } else if(r.started&&leaverSeat!==null&&r.current===leaverSeat){
+      } else if(r.started&&!r.roundEnded&&activeSeats(r).size===1){
+        // Everyone still in the round left or surrendered → last player wins it
+        endRoundBySurrender(r.code,[...activeSeats(r)][0]);
+      } else if(r.started&&!r.roundEnded&&leaverSeat!==null&&r.current===leaverSeat){
         // It was the leaver's turn → pass turn to next active player so game doesn't hang
-        const active=new Set(r.players.map(p=>p.seat));
-        r.current=nextSeat(r.current,active);
+        r.current=nextSeat(r.current,activeSeats(r));
         r.phase="draw"; r.hasDrawn=false;
         broadcast(r.code);
       }
