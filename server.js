@@ -3,6 +3,7 @@ const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
 const { isKent, isMacung } = require("./handCheck");
+const { verifyUser, applyChips } = require("./chips");
 
 const app = express();
 app.use(cors());
@@ -259,9 +260,20 @@ function settleRound(r, winnerSeat, val){
   });
   r.scores[winnerSeat]-=gain;
   payments[winnerSeat]=gain;
+  // Save to the accounts; surrendered players were already charged when they surrendered
+  r.players.forEach(x=>{ if(!r.surrendered.has(x.seat)) payAccount(x, payments[x.seat]); });
   r.roundEnded=true;
   r.phase="ended";
   return payments;
+}
+
+// Saves a player's chips change to their account (guests: nothing saved)
+// and sends them the new balance
+function payAccount(p, delta){
+  if(!p||!p.userId||!delta) return;
+  applyChips(p.userId, delta).then(balance=>{
+    if(balance!==null) io.to(p.id).emit("balanceUpdate",{balance});
+  });
 }
 
 // Everyone else surrendered → the last player wins the round and takes the fees
@@ -286,17 +298,19 @@ function endRoundBySurrender(code, winnerSeat){
 io.on("connection",(socket)=>{
   console.log("Connected:",socket.id);
 
-  socket.on("createRoom",({playerName,tableId,email},cb)=>{
+  socket.on("createRoom",async({playerName,tableId,email,accessToken},cb)=>{
+    const userId=await verifyUser(accessToken);
     const code=makeCode();
     rooms[code]=newRoom(tableId);
     rooms[code].code=code;
-    rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null});
+    rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null,userId});
     socket.join(code);
     cb({code,seat:0,pending:false});
     io.to(code).emit("roomUpdate",roomInfo(code));
   });
 
-  socket.on("joinRoom",({playerName,code,email},cb)=>{
+  socket.on("joinRoom",async({playerName,code,email,accessToken},cb)=>{
+    const userId=await verifyUser(accessToken);
     const r=rooms[code];
     if(!r){cb({error:"Dhoma nuk ekziston"});return;}
     const total=r.players.length+r.pending.length;
@@ -310,19 +324,20 @@ io.on("connection",(socket)=>{
     sendPush(existingEmails,"Maçung 🃏",`${playerName} hyri në dhomën ${code}!`);
 
     if(r.started){
-      r.pending.push({id:socket.id,name:playerName,seat,hand:[],email:email||null});
+      r.pending.push({id:socket.id,name:playerName,seat,hand:[],email:email||null,userId});
       socket.join(code);
       cb({code,seat,pending:true});
       socket.emit("waitingForRound",{message:"⏳ Duke pritur fundin e raundeve..."});
     } else {
-      r.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null});
+      r.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null,userId});
       socket.join(code);
       cb({code,seat,pending:false});
     }
     io.to(code).emit("roomUpdate",roomInfo(code));
   });
 
-  socket.on("findRoom",({playerName,tableId,email},cb)=>{
+  socket.on("findRoom",async({playerName,tableId,email,accessToken},cb)=>{
+    const userId=await verifyUser(accessToken);
     const open=Object.values(rooms).find(r=>
       !r.started&&r.tableId===tableId&&(r.players.length+r.pending.length)<4
     );
@@ -332,7 +347,7 @@ io.on("connection",(socket)=>{
       // Notify existing players
       const existingEmails=open.players.map(p=>p.email).filter(Boolean);
       sendPush(existingEmails,"Maçung 🃏",`${playerName} hyri në dhomën ${open.code}!`);
-      open.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null});
+      open.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null,userId});
       socket.join(open.code);
       cb({code:open.code,seat,pending:false});
       io.to(open.code).emit("roomUpdate",roomInfo(open.code));
@@ -340,7 +355,7 @@ io.on("connection",(socket)=>{
       const code=makeCode();
       rooms[code]=newRoom(tableId);
       rooms[code].code=code;
-      rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null});
+      rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null,userId});
       socket.join(code);
       cb({code,seat:0,pending:false});
       io.to(code).emit("roomUpdate",roomInfo(code));
@@ -430,6 +445,7 @@ io.on("connection",(socket)=>{
     r.surrenderFees[p.seat]=table.surrender;
     r.surrenderPot+=table.surrender;
     r.scores[p.seat]+=table.surrender;
+    payAccount(p, -table.surrender);
     io.to(code).emit("playerSurrendered",{seat:p.seat,name:p.name,fee:table.surrender});
     const active=activeSeats(r);
     if(active.size===1){ endRoundBySurrender(code,[...active][0]); return; }
