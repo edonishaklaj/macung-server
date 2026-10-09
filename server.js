@@ -122,11 +122,11 @@ function nextSeat(cur, activeSet){
 }
 
 const TABLES=[
-  {id:1,surrender:50,kent:100,macung:200},
-  {id:2,surrender:100,kent:200,macung:500},
-  {id:3,surrender:200,kent:500,macung:1000},
-  {id:4,surrender:500,kent:1000,macung:2000},
-  {id:5,surrender:1000,kent:2000,macung:5000},
+  {id:1,surrender:50,kent:100,macung:200},     // €0.50 / €1 / €2
+  {id:2,surrender:100,kent:200,macung:400},    // €1 / €2 / €4
+  {id:3,surrender:200,kent:500,macung:1000},   // €2 / €5 / €10
+  {id:4,surrender:500,kent:1000,macung:2000},  // €5 / €10 / €20
+  {id:5,surrender:1000,kent:2000,macung:4000}, // €10 / €20 / €40
 ];
 
 function newRoom(tableId){

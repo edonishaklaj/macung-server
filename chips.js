@@ -1,4 +1,4 @@
-// Online chips live in Supabase (profiles.balance). Players' browsers can't
+// Online chips live in Supabase (profiles.balance, in euro cents: 50 = €0.50). Players' browsers can't
 // change them; only this server can, with the service_role key, through the
 // apply_online_chips() database function. Guests (no account) aren't saved.
 const SUPABASE_URL = process.env.SUPABASE_URL || "https://dswusdqjvifwodedbygg.supabase.co";
