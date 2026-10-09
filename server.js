@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const { isKent, isMacung } = require("./handCheck");
 
 const app = express();
 app.use(cors());
@@ -160,6 +161,21 @@ function nextDealerInfo(r){
   const seat=nextDealerSeat(r);
   const p=[...r.players,...r.pending].find(x=>x.seat===seat);
   return {nextDealer:seat,nextDealerName:p?p.name:""};
+}
+
+// The player's cards in the order shown on their screen (localHand), using the
+// server's own cards. For Kent the game sets the free card aside before sending,
+// so cards missing from localHand go at the end. null = a card they don't hold.
+function orderedHand(p, localHand){
+  const byId=new Map(p.hand.map(c=>[c.id,c]));
+  const seen=new Set(), out=[];
+  for(const c of Array.isArray(localHand)?localHand:[]){
+    const card=c&&byId.get(c.id);
+    if(!card||seen.has(card.id)) return null;
+    seen.add(card.id); out.push(card);
+  }
+  p.hand.forEach(c=>{ if(!seen.has(c.id)) out.push(c); });
+  return out;
 }
 
 // Seats still playing the current round
@@ -427,16 +443,27 @@ io.on("connection",(socket)=>{
     if(!r||!r.started||r.roundEnded) return; // a round is paid only once
     const p=r.players.find(p=>p.id===socket.id);
     if(!p||r.surrendered.has(p.seat)) return;
-    const table=TABLES.find(t=>t.id===r.tableId)||TABLES[0];
     const kind=type==="macung"?"macung":"kent";
+    // Only on the player's own turn with 15 cards (after drawing, before
+    // discarding), and only with a hand that really is Maçung / Kent
+    const hand=orderedHand(p, localHand);
+    const valid=r.current===p.seat&&r.phase==="discard"&&p.hand.length===15&&hand&&
+      (kind==="macung"?isMacung(hand):(isKent(hand)||isMacung(hand)));
+    if(!valid){
+      socket.emit("finishRejected",{message:kind==="macung"?"❌ Dora nuk është Maçung":"❌ Dora nuk është Kënt"});
+      broadcast(code); // puts back what the player's screen already changed (e.g. the card set aside for Kent)
+      return;
+    }
+    const table=TABLES.find(t=>t.id===r.tableId)||TABLES[0];
     const val=table[kind];
     const n=r.players.length;
+    const shown=Array.isArray(localHand)&&localHand.length>0?hand.slice(0,localHand.length):p.hand;
     // Round is over → votes for next round are now allowed (settleRound sets roundEnded)
     const payments=settleRound(r, p.seat, val);
     io.to(code).emit("gameFinished",{
       type:kind,winner:p.seat,val,
       winnerName:p.name,
-      winnerHand: localHand && localHand.length>0 ? localHand : p.hand,
+      winnerHand: shown,
       scores:r.scores,
       playerCount:n,
       payments,
