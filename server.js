@@ -135,6 +135,7 @@ function newRoom(tableId){
     deck:[],discard:[],
     playerDiscards:{0:[],1:[],2:[],3:[]},
     current:0,dealer:0,
+    host:0,                 // seat that starts the game (the creator; passes on if they leave before the start)
     phase:"waiting",hasDrawn:false,
     roundNum:1,
     scores:{0:0,1:0,2:0,3:0},
@@ -172,6 +173,7 @@ function roomInfo(code){
     code,
     tableId:r.tableId,
     started:r.started,
+    host:r.host,
     players:r.players.map(p=>({seat:p.seat,name:p.name,cardCount:p.hand.length})),
     pending:r.pending.map(p=>({seat:p.seat,name:p.name})),
   };
@@ -331,10 +333,11 @@ io.on("connection",(socket)=>{
 
   socket.on("startGame",({code})=>{
     const r=rooms[code];
-    if(!r) return;
+    if(!r||r.started) return;
     const p=r.players.find(p=>p.id===socket.id);
-    if(!p||p.seat!==0) return;
+    if(!p||p.seat!==r.host) return;
     if(r.players.length<2){socket.emit("error","Duhen të paktën 2 lojtarë");return;}
+    r.dealer=r.host; // the room's creator deals the first round
     dealRound(code);
   });
 
@@ -508,6 +511,13 @@ io.on("connection",(socket)=>{
       if(r.readyTimer){ clearTimeout(r.readyTimer); r.readyTimer=null; }
       delete rooms[r.code];
     } else {
+      // The creator left before the start → the next player in turn order (0→3→2→1) can start the game
+      if(!r.started&&leaverSeat===r.host){
+        const seats=new Set(r.players.map(p=>p.seat));
+        let h=(leaverSeat+3)%4;
+        for(let i=0;i<4&&!seats.has(h);i++) h=(h+3)%4;
+        r.host=h;
+      }
       io.to(r.code).emit("playerLeft",{name:leaverName});
       io.to(r.code).emit("roomUpdate",roomInfo(r.code));
       if(r.started&&r.players.length<2){
