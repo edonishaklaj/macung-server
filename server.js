@@ -2,6 +2,7 @@ const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
 const cors = require("cors");
+const crypto = require("crypto");
 const { isKent, isMacung } = require("./handCheck");
 const { verifyUser, applyChips } = require("./chips");
 
@@ -179,6 +180,12 @@ function orderedHand(p, localHand){
   return out;
 }
 
+// Every connected player voted for the next round
+function allReady(r){
+  const online=r.players.filter(p=>!p.disconnected);
+  return online.length>0&&online.every(p=>r.readyVotes&&r.readyVotes.has(p.seat));
+}
+
 // Seats still playing the current round
 function activeSeats(r){
   return new Set(r.players.map(p=>p.seat).filter(s=>!r.surrendered.has(s)));
@@ -196,10 +203,9 @@ function roomInfo(code){
   };
 }
 
-function broadcast(code){
-  const r=rooms[code];
-  const state={
-    code,
+function gameState(r){
+  return {
+    code:r.code,
     tableId:r.tableId,
     current:r.current,
     dealer:r.dealer,
@@ -215,7 +221,11 @@ function broadcast(code){
     surrendered:[...r.surrendered],
     drawnSeats:[...r.drawnSeats],
   };
-  io.to(code).emit("gameUpdate",state);
+}
+
+function broadcast(code){
+  const r=rooms[code];
+  io.to(code).emit("gameUpdate",gameState(r));
   r.players.forEach(p=>io.to(p.id).emit("yourHand",{hand:p.hand}));
 }
 
@@ -303,9 +313,9 @@ io.on("connection",(socket)=>{
     const code=makeCode();
     rooms[code]=newRoom(tableId);
     rooms[code].code=code;
-    rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null,userId});
+    rooms[code].players.push({id:socket.id,token:crypto.randomUUID(),name:playerName,seat:0,hand:[],email:email||null,userId});
     socket.join(code);
-    cb({code,seat:0,pending:false});
+    cb({code,seat:0,pending:false,token:rooms[code].players[0].token});
     io.to(code).emit("roomUpdate",roomInfo(code));
   });
 
@@ -324,14 +334,14 @@ io.on("connection",(socket)=>{
     sendPush(existingEmails,"Maçung 🃏",`${playerName} hyri në dhomën ${code}!`);
 
     if(r.started){
-      r.pending.push({id:socket.id,name:playerName,seat,hand:[],email:email||null,userId});
+      r.pending.push({id:socket.id,token:crypto.randomUUID(),name:playerName,seat,hand:[],email:email||null,userId});
       socket.join(code);
-      cb({code,seat,pending:true});
+      cb({code,seat,pending:true,token:r.pending[r.pending.length-1].token});
       socket.emit("waitingForRound",{message:"⏳ Duke pritur fundin e raundeve..."});
     } else {
-      r.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null,userId});
+      r.players.push({id:socket.id,token:crypto.randomUUID(),name:playerName,seat,hand:[],email:email||null,userId});
       socket.join(code);
-      cb({code,seat,pending:false});
+      cb({code,seat,pending:false,token:r.players[r.players.length-1].token});
     }
     io.to(code).emit("roomUpdate",roomInfo(code));
   });
@@ -347,17 +357,17 @@ io.on("connection",(socket)=>{
       // Notify existing players
       const existingEmails=open.players.map(p=>p.email).filter(Boolean);
       sendPush(existingEmails,"Maçung 🃏",`${playerName} hyri në dhomën ${open.code}!`);
-      open.players.push({id:socket.id,name:playerName,seat,hand:[],email:email||null,userId});
+      open.players.push({id:socket.id,token:crypto.randomUUID(),name:playerName,seat,hand:[],email:email||null,userId});
       socket.join(open.code);
-      cb({code:open.code,seat,pending:false});
+      cb({code:open.code,seat,pending:false,token:open.players[open.players.length-1].token});
       io.to(open.code).emit("roomUpdate",roomInfo(open.code));
     } else {
       const code=makeCode();
       rooms[code]=newRoom(tableId);
       rooms[code].code=code;
-      rooms[code].players.push({id:socket.id,name:playerName,seat:0,hand:[],email:email||null,userId});
+      rooms[code].players.push({id:socket.id,token:crypto.randomUUID(),name:playerName,seat:0,hand:[],email:email||null,userId});
       socket.join(code);
-      cb({code,seat:0,pending:false});
+      cb({code,seat:0,pending:false,token:rooms[code].players[0].token});
       io.to(code).emit("roomUpdate",roomInfo(code));
     }
   });
@@ -488,6 +498,26 @@ io.on("connection",(socket)=>{
     });
   });
 
+  // A player's connection came back (phone was locked / app in background):
+  // the client sends the token it got when it joined and takes its seat again.
+  socket.on("rejoinRoom",({code,token}={},cb)=>{
+    const reply=typeof cb==="function"?cb:()=>{};
+    const r=rooms[code];
+    const p=r&&token&&[...r.players,...r.pending].find(x=>x.token===token);
+    if(!p){ reply({error:"Nuk je më në këtë dhomë"}); return; }
+    p.id=socket.id;
+    p.disconnected=false;
+    socket.join(code);
+    const pending=r.pending.includes(p);
+    reply({code,seat:p.seat,pending});
+    io.to(code).emit("roomUpdate",roomInfo(code));
+    // Only during a running round: after the round, the next deal sends the new state
+    if(r.started&&!pending&&!r.roundEnded){
+      socket.emit("gameUpdate",gameState(r));
+      socket.emit("yourHand",{hand:p.hand});
+    }
+  });
+
   socket.on("newRound",({code})=>{
     const r=rooms[code];
     if(!r) return;
@@ -513,7 +543,7 @@ io.on("connection",(socket)=>{
     }
 
     // If everyone has voted, start immediately
-    if(r.readyVotes.size>=r.players.length){
+    if(allReady(r)){
       startNextRound(code);
     }
   });
@@ -529,6 +559,16 @@ io.on("connection",(socket)=>{
     r.readyVotes=new Set();
     setTimeout(()=>{ if(r) r.roundStarting=false; },3000);
 
+    // Players who lost the connection while out of the round and didn't come back
+    const gone=r.players.filter(p=>p.disconnected);
+    if(gone.length>0){
+      r.players=r.players.filter(p=>!p.disconnected);
+      gone.forEach(p=>io.to(code).emit("playerLeft",{name:p.name}));
+      if(r.players.length+r.pending.length<2){
+        io.to(code).emit("gameEnded",{message:`❌ ${gone[0].name} doli — loja mbaroi`});
+        return;
+      }
+    }
     // Merge pending into active
     if(r.pending.length>0){
       r.pending.forEach(p=>r.players.push(p));
@@ -548,7 +588,19 @@ io.on("connection",(socket)=>{
     const leaver=r.players.find(p=>p.id===socket.id);
     const leaverName=leaver?leaver.name:"Lojtari";
     const leaverSeat=leaver?leaver.seat:null;
+    // Out of this round (surrendered) or the round is over: they have no turn
+    // until the next deal, so the seat is kept for them to reconnect. Only a
+    // player still missing when the next round starts leaves the game.
+    const othersOnline=r.players.some(p=>p!==leaver&&!p.disconnected)||r.pending.length>0;
+    if(leaver&&r.started&&othersOnline&&(r.roundEnded||r.surrendered.has(leaver.seat))){
+      leaver.disconnected=true;
+      if(r.roundEnded&&r.readyVotes&&r.readyVotes.size>0&&allReady(r)) startNextRound(r.code);
+      console.log("Disconnected (seat kept):",socket.id);
+      return;
+    }
     r.players=r.players.filter(p=>p.id!==socket.id);
+    // Nobody connected is left → drop the seats kept for others too
+    if(!r.players.some(p=>!p.disconnected)) r.players=[];
     r.pending=r.pending.filter(p=>p.id!==socket.id);
     if(r.players.length===0&&r.pending.length===0){
       if(r.readyTimer){ clearTimeout(r.readyTimer); r.readyTimer=null; }
@@ -580,7 +632,7 @@ io.on("connection",(socket)=>{
         const activeSeats=new Set(r.players.map(p=>p.seat));
         r.readyVotes=new Set([...r.readyVotes].filter(s=>activeSeats.has(s)));
         io.to(r.code).emit("readyUpdate",{ready:r.readyVotes.size,total:r.players.length});
-        if(r.players.length>1 && r.readyVotes.size>=r.players.length){
+        if(r.players.length>1 && allReady(r)){
           startNextRound(r.code);
         }
       }
